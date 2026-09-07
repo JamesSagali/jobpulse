@@ -22,13 +22,11 @@
 - [Job Skill Matching](#job-skill-matching)
 - [Candidate Role Profiles](#candidate-role-profiles)
 - [Job Matching Algorithm](#job-matching-algorithm)
-- [Match Scoring](#match-scoring)
+- [Match Scoring](#skill-match-score)
 - [Power BI Dashboard](#power-bi-dashboard)
 - [Airflow Orchestration](#airflow-orchestration)
 - [Docker](#docker)
 - [Configuration](#configuration)
-- [Running the Project](#running-the-project)
-- [Data Quality & Validation](#data-quality--validation)
 - [Design Decisions](#design-decisions)
 - [Known Limitations](#known-limitations)
 - [Future Improvements](#future-improvements)
@@ -59,6 +57,9 @@ The project combines:
 - Power BI
 
 The platform transforms raw job listings into an analytics-ready Gold layer and then applies a structured matching model to identify relevant job opportunities.
+
+<img width="278" height="203" alt="image" src="https://github.com/user-attachments/assets/9acf44b0-81bf-4e55-819a-4a7013728da0" />
+
 
 ---
 
@@ -93,45 +94,7 @@ The matching model is designed to be **transparent and explainable**.
 ---
 
 # Architecture
-
-```text
-                         ┌─────────────────────┐
-                         │   StartupJobs API   │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Python Ingestion    │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Airflow + Docker    │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                    ┌──────────────────────────────┐
-                    │         DATABRICKS           │
-                    │                              │
-                    │    Bronze → Silver → Gold    │
-                    └──────────────┬───────────────┘
-                                   │
-                 ┌─────────────────┴─────────────────┐
-                 │                                   │
-                 ▼                                   ▼
-          Analytics Model                     Matching Model
-                 │                                   │
-                 └─────────────────┬─────────────────┘
-                                   │
-                                   ▼
-                         ┌─────────────────────┐
-                         │      Power BI       │
-                         │                     │
-                         │ Job Market Overview │
-                         │ My Job Matches      │
-                         │ Job Explorer        │
-                         └─────────────────────┘
-```
+<img width="633" height="429" alt="image" src="https://github.com/user-attachments/assets/713872d4-688e-4ab8-8493-a1ca12ba8696" />
 
 ---
 
@@ -191,9 +154,9 @@ jobpulse/
 │   ├── ingestion/
 │   │   └── startup_jobs/
 │   │       ├── __init__.py
-│   │       └── ingest.py
-│   │
-│   └── ...
+│   │       └── config.py
+|   |       └── ingest.py
+|   |       └── startup_jobs.py
 │
 ├── databricks/
 │   ├── bronze/
@@ -332,6 +295,8 @@ The Gold layer is designed specifically for analytical consumption and Power BI.
 ---
 
 # Dimensional Model
+
+<img width="492" height="461" alt="image" src="https://github.com/user-attachments/assets/b243176a-42c2-4423-9537-a687783a71de" />
 
 ## Fact Table
 
@@ -763,25 +728,7 @@ The weight is primarily used as a **tie-breaker** when multiple candidate roles 
 
 The matching process works through the relationship between the **skill database**, **skill aliases**, **job skill evidence**, and **candidate role profiles**.
 
-```text
-                  dim_skill
-                     │
-                     │ canonical skill
-                     ▼
-              dim_skill_alias
-                     │
-                     │ aliases
-                     ▼
-              job_skill_match
-                     │
-                     │ matched skills
-                     ▼
-           candidate_role_match
-                     │
-                     │ role-specific requirements
-                     ▼
-             job_match_results
-```
+<img width="287" height="462" alt="image" src="https://github.com/user-attachments/assets/0bb59cd6-c554-4188-ac10-06ecc6f0168e" />
 
 The algorithm can be understood in four stages.
 
@@ -914,4 +861,504 @@ dim_role
 For example:
 
 ```text
+"Senior Data Engineer"
+```
+can be associated with:
+
+```text
+Data Engineer
+```
+A job can also map to multiple roles.
+
+This is why bridge_job_role is used to represent the many-to-many relationship between jobs and
+roles
+
+# Multiple Candidate Role Matches
+
+A job may match more than one target role.
+
+For example, a job could be relevant to both:
+
+```text
+Data Analyst
+```
+and:
+
+```text
+BI Analyst
+```
+When multiple target roles are applicable, JobPulse evaluates the job's skill evidence against each role's
+relevant skill set.
+
+The strongest candidate-role match is selected using:
+  1. Highest role-specific skill match score
+  2. Candidate role priority as a tie-breaker
+     
+This produces one primary matched candidate role in job_match_results.
+
+# Overall Match Score
+
+Once the best candidate role is identified, the overall score combines:
+
+```text
+Role Match = 40%
+Skill Match = 60%
+```
+Formula:
+
+```text
+l_match_score =
+ (role_match_score × 0.40)
+ +
+ (skill_match_score × 0.60)
+```
+A job associated with one of the candidate's target roles receives:
+
+```text
+role_match_score = 100
+```
+Therefore, if:
+
+```text
+role_match_score = 100
+skill_match_score = 76.47
+```
+then:
+
+```text
+(100 × 0.40) + (76.47 × 0.60)
+= 85.88
+```
+
+# Match Categories
+
+The overall score is translated into an interpretable category:
+
+| Score | Category |
+|---|---:|
+| 80–100 | Excellent Match |
+| 65–79.99  | Strong Match |
+| 50–64.99 | Moderate Match |
+|30–49.99 | Weak Match |
+| <30 | Poor Match |
+
+# Job Match Results
+## `job_match_results`
+
+This table is the final job-level matching output.
+Important fields include:
+
+```text
+id
+job_title
+job_url
+matched_candidate_role
+candidate_role_weight
+relevant_skills
+skills_matched
+skill_match_score
+role_match_score
+overall_match_score
+match_category
+```
+
+It provides a summarized representation of the detailed skill evidence in job_skill_match .
+This separation is intentional:
+
+```text
+job_skill_match
+ ↓
+Detailed evidence
+ ↓
+job_match_results
+ ↓
+Job-level recommendation
+```
+# Example
+
+Consider a Data Engineer job.
+
+The candidate profile contains:
+
+```text
+27 relevant Data Engineer skills
+```
+
+The job matches:
+
+```text
+17 skills
+```
+
+Therefore:
+
+```text
+17 / 27 × 100
+= 62.96% skill match
+```
+
+Because the job is associated with the candidate's target role:
+
+```text
+Role Match = 100
+```
+
+Overall:
+
+```text
+(100 × 0.40) + (62.96 × 0.60)
+= 77.78
+```
+
+The result becomes:
+
+```text
+Strong Match
+```
+
+This allows the dashboard to explain why a job received its score.
+
+# Power BI Dashboard
+
+Power BI consumes the Gold layer using Import mode.
+
+The dashboard contains two pages.
+
+# Page 1 — Job Market Overview
+
+Purpose:
+
+  Understand the overall remote job market.
+
+<img width="1769" height="797" alt="image" src="https://github.com/user-attachments/assets/88c07c03-48ea-449e-b841-de03e4ba35aa" />
+
+# Page 2 — My Job Matches
+
+Purpose:
+
+  Identify jobs that best match the candidate's target roles and skills.
+  
+<img width="1758" height="799" alt="image" src="https://github.com/user-attachments/assets/881aaeb4-d819-4c7d-9f01-84761738e3cc" />
+
+# Airflow Orchestration
+
+The primary DAG is:
+
+```text
+jobpulse_pipeline
+```
+The pipeline includes tasks such as:
+
+```text
+ingestt_jobs
+ ↓
+run_databricks_pipeline
+```
+Airflow handles pipeline orchestration while Databricks performs the data transformation and Gold-layer
+processing.
+
+# Docker
+
+Airflow runs inside Docker.
+
+The Airflow webserver is exposed locally through:
+
+```text
+8082:8080
+```
+
+# Configuration
+
+Environment variables include:
+
+```text
+STARTUP_JOBS_API_KEY=your_api_key
+DATABRICKS_HOST=your_databricks_host
+DATABRICKS_TOKEN=your_databricks_token
+```
+
+# Design Decisions
+
+## Skills as a Database
+
+One of the central architectural decisions in JobPulse is treating skills as structured data.
+
+Instead of embedding a large list of skills directly into the matching algorithm:
+
+```text
+m
+ └── 69 hardcoded skills
+```
+the system uses:
+
+```text
+dim_skill
+ ↓
+dim_skill_alias
+ ↓
+job_skill_match
+```
+This makes the skill vocabulary:
+
+  - Reusable
+  - Maintainable
+  - Auditable
+  - Extensible
+  - Independent of the scoring logic
+
+# Why candidate_role_match Exists
+
+`candidate_role_match` represents the candidate's target-role requirements.
+
+It answers:
+
+  For this target role, which skills should be considered relevant?
+
+For example:
+
+```text
+Data Engineer
+ ├── SQL
+ ├── Python
+ ├── Databricks
+ ├── PySpark
+ ├── Airflow
+ └── ...
+```
+This prevents the matching algorithm from treating every canonical skill as equally relevant to every role.
+
+# Why `job_skill_match` Is Separate
+
+`job_skill_match` answers:
+
+  Which canonical skills are actually present in this job?
+
+`candidate_role_match` answers:
+
+Which skills matter for this candidate's target role?
+
+The matching algorithm combines the two.
+
+```text
+job_skill_match
+ │
+ │ actual job skills
+ ▼
+ Matching Logic
+ ▲
+ │ required/relevant skills
+ │
+ candidate_role_match
+```
+This separation is one of the key design features of the JobPulse matching system.
+
+# Why Use a Rule-Based Matching System?
+
+The system prioritizes explainability.
+
+A recommendation can be broken down into:
+
+```text
+Matched Role
+Relevant Skills
+Skills Matched
+Skill Match Score
+Overall Match Score
+Match Category
+```
+For example:
+
+```text
+Matched Role: Analytics Engineer
+Relevant Skills: 17
+Skills Matched: 13
+Skill Match: 76.47%
+Role Match: 100%
+Overall Match: 85.88%
+Category: Excellent Match
+```
+
+# Known Limitations
+
+## 1. Keyword-Based Skill Detection
+
+Although skills are modeled as a structured database, the current job-to-skill evidence layer identifies skills
+through normalized aliases in job text.
+
+This means semantic equivalents that use completely different terminology may not always be detected.
+
+## 2. Seniority
+
+Seniority is currently not part of the matching score.
+
+For example:
+
+```text
+Analytics Engineer
+Director, Analytics Engineering
+```
+may both map to:
+
+```text
+Analytics Engineer
+```
+even though their seniority differs substantially.
+
+A future version should introduce seniority compatibility.
+
+## 3. Salary Completeness
+
+Salary information is not available for every job.
+
+The model therefore tracks:
+
+```text
+has_salary_info
+```
+
+## 4. Currency Normalization
+
+Salary comparisons across different currencies require currency conversion before they can be treated as
+directly comparable
+
+## 5. Role Alias Coverage
+
+Role matching depends on the quality and completeness of:
+
+```text
+dim_role_alias
+```
+
+# Future Improvements
+
+## 1. Semantic Skill Matching
+
+Introduce NLP or embedding-based matching to identify skills that are semantically related even when
+exact aliases are absent.
+
+## 2. Seniority Matching
+
+Add a seniority model and incorporate seniority compatibility into the recommendation score.
+
+## 3. Candidate Profile
+
+Expand the candidate model to support:
+
+```text
+Candidate
+ ├── Target Roles
+ ├── Skills
+ ├── Skill Proficiency
+ ├── Preferred Locations
+ ├── Salary Expectations
+ └── Seniority
+```
+This would allow JobPulse to evolve from a single-candidate portfolio project into a multi-candidate
+matching platform
+
+## 4. Automated Power BI Refresh
+
+Because Power BI uses Import mode, the published semantic model needs to be manually refresh after the Databricks
+pipeline completes.
+
+# End-to-End Workflow
+
+```text
+1. Query StartupJobs API
+ ↓
+2. Retrieve paginated job listings
+ ↓
+3. Store raw JSON in Bronze
+ ↓
+4. Clean and standardize jobs in Silver
+ ↓
+5. Detect and remove duplicates
+ ↓
+6. Filter remote jobs
+ ↓
+7. Build Gold dimensional model
+ ↓
+8. Normalize job roles
+ ↓
+9. Map role aliases
+ ↓
+10. Maintain canonical skill database
+ ↓
+11. Normalize skill aliases
+ ↓
+12. Generate job × skill evidence
+ ↓
+13. Apply candidate role-specific skill profiles
+ ↓
+14. Calculate skill match scores
+ ↓
+15. Determine strongest candidate role
+ ↓
+16. Calculate overall match score
+ ↓
+17. Categorize match quality
+ ↓
+18. Load Gold data into Power BI
+ ↓
+19. Explore market and job recommendations
+```
+
+# Portfolio Value
+
+JobPulse demonstrates practical experience across the modern data stack:
+
+  - API data ingestion
+  - Python development
+  - Workflow orchestration
+  - Docker
+  - Databricks
+  - PySpark
+  - Delta Lake
+  - Medallion architecture
+  - Dimensional modeling
+  - Data quality
+  - Role normalization
+  - Skill data modeling
+  - Rule-based recommendation systems
+  - Power BI
+  - Git/GitHub
+  - 
+The project demonstrates the complete journey from:
+
+
+```text
+Raw Data
+```
+to:
+
+```text
+Clean Data
+```
+to:
+
+```text
+Analytics Model
+```
+to:
+
+```text
+Structured Skill Evidence
+```
+to:
+
+```text
+Personalized Job Recommendations
+```
+to:
+
+```text
+Business Intelligence Dashboard
+```
+
+# Author
+
+## James Sagali
+
+### Last edited: 7th September, 2026.
+
 "
