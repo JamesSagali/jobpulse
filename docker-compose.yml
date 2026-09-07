@@ -1,0 +1,25 @@
+services:
+
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: jobpulse-airflow
+
+    ports:
+      - "8082:8080"
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+
+      STARTUP_JOBS_API_KEY: ${STARTUP_JOBS_API_KEY}
+      DATABRICKS_HOST: ${DATABRICKS_HOST}
+      DATABRICKS_TOKEN: ${DATABRICKS_TOKEN}
+
+    command: standalone
